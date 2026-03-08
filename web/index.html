@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Memhog</title>
+    <style>
+      :root {
+        color-scheme: only light;
+        --site--viewport-max: 90;
+        --site--viewport-min: 20;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        min-height: 100%;
+        overflow-x: hidden;
+        background: #f8fcfd;
+      }
+
+      body {
+        display: block;
+        color: #13203a;
+        font-family:
+          'Iowan Old Style',
+          'Palatino Linotype',
+          Palatino,
+          'URW Palladio L',
+          serif;
+      }
+
+      canvas {
+        width: 100%;
+        height: min(34vh, 360px);
+        min-height: 220px;
+        background: #f8fcfd;
+        display: block;
+      }
+
+      .content {
+        width: min(40rem, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 28px 0 84px;
+      }
+
+      h1 {
+        margin: 0 0 22px;
+        font-size: clamp(
+          2.125 * 1rem,
+          (
+            (2.125 - ((3.25 - 2.125) / (var(--site--viewport-max) - var(--site--viewport-min)) * var(--site--viewport-min))) *
+              1rem + ((3.25 - 2.125) / (var(--site--viewport-max) - var(--site--viewport-min))) * 100vw
+          ),
+          3.25 * 1rem
+        );
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        color: #548ccd;
+      }
+
+      p {
+        margin: 0 0 24px;
+        font-size: clamp(
+          1.1875 * 1rem,
+          (
+            (1.1875 - ((1.25 - 1.1875) / (var(--site--viewport-max) - var(--site--viewport-min)) * var(--site--viewport-min))) *
+              1rem + ((1.25 - 1.1875) / (var(--site--viewport-max) - var(--site--viewport-min))) * 100vw
+          ),
+          1.25 * 1rem
+        );
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+        line-height: 1.4;
+        color: #2c3b62;
+      }
+
+      .lead {
+        color: #22355f;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="flow"></canvas>
+    <main class="content">
+      <h1>
+        Memhog —<br />
+        boring infrastructure for stateful systems
+      </h1>
+      <p class="lead">
+        Deployment scripts that drift, replication configs nobody fully owns, operational habits that break under new hands. Memhog is a set of tools that bring consistency to running Valkey on your own infrastructure. Predictable, composable, and scriptable by design.
+      </p>
+    </main>
+
+    <script>
+      const canvas = document.getElementById('flow')
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
+
+      const DPR = 1
+      const MAX_PARTICLES = 560
+      const MIN_PARTICLES = 220
+      const BASE_STREAM_Y = 0.56
+      const STREAM_JITTER = 0.85
+      const FLOW_SPEED = 0.45
+      const CUBE_SIZE_SCALE = 1
+      const GATHER_POINT = 0.35
+      const FUNNEL_START = 0.12
+      const POST_GATHER_SIZE_SCALE = 0.5
+      const SIZE_TRANSITION_LENGTH = 0.2
+      const ROTATION_STEPS = 24
+      const SPRITE_SIZE = 64
+      const SPRITE_OUTER_RATIO = 0.56
+      const SPRITE_DRAW_SCALE = 1 / SPRITE_OUTER_RATIO
+      const BASE_CUBE_SIZE = 10.8 * CUBE_SIZE_SCALE * SPRITE_DRAW_SCALE
+      const MOBILE_CUBE_SCALE_MIN = 0.52
+      const MOBILE_CUBE_SCALE_MAX_WIDTH = 768
+      const MOBILE_FLOW_SPEED_MIN = 0.38
+      const MOBILE_MIN_PARTICLES = 36
+      const MOBILE_PARTICLE_DENSITY_MIN = 0.22
+      const PERF_SAMPLE_EVERY = 8
+      const LUT_SIZE = 1024
+      const LUT_LAST = LUT_SIZE - 1
+      const FRAME_GAP_RESET_MS = 250
+
+      const BG = '#f8fcfd'
+      const GOLD = '#8cb4d7'
+      const BLUE = '#c5d9f2'
+      const TWO_PI = Math.PI * 2
+
+      let viewW = 0
+      let viewH = 0
+      let streamY = 0
+      let wideSpread = 0
+      let speedScale = 0
+      let cubeBaseSize = BASE_CUBE_SIZE
+      let resizeRaf = 0
+
+      let seed = 0x9e3779b9
+      const rand = () => {
+        seed ^= seed << 13
+        seed ^= seed >>> 17
+        seed ^= seed << 5
+        return (seed >>> 0) / 4294967296
+      }
+
+      const progress = new Float32Array(MAX_PARTICLES)
+      const speed = new Float32Array(MAX_PARTICLES)
+      const offset = new Float32Array(MAX_PARTICLES)
+      const slopeJitter = new Float32Array(MAX_PARTICLES)
+      const kind = new Uint8Array(MAX_PARTICLES)
+      const rotIndex = new Uint8Array(MAX_PARTICLES)
+      const funnelFactorLut = new Float32Array(LUT_SIZE)
+      const sizeScaleLut = new Float32Array(LUT_SIZE)
+
+      let activeParticles = MAX_PARTICLES
+      let minActiveParticles = MIN_PARTICLES
+      let maxActiveParticles = MAX_PARTICLES
+
+      function buildLuts() {
+        const invFunnelSpan = 1 / Math.max(0.001, GATHER_POINT - FUNNEL_START)
+        const invSizeSpan = 1 / Math.max(0.001, SIZE_TRANSITION_LENGTH)
+        const postGatherDrop = 1 - POST_GATHER_SIZE_SCALE
+
+        for (let i = 0; i < LUT_SIZE; i++) {
+          const pr = i / LUT_LAST
+
+          let funnel = 1
+          if (pr > FUNNEL_START) {
+            let t = (pr - FUNNEL_START) * invFunnelSpan
+            t = t < 0 ? 0 : t > 1 ? 1 : t
+            funnel = 1 - t * t * t
+          }
+          funnelFactorLut[i] = funnel
+
+          let tt = (pr - GATHER_POINT) * invSizeSpan
+          tt = tt < 0 ? 0 : tt > 1 ? 1 : tt
+          sizeScaleLut[i] = 1 - tt * postGatherDrop
+        }
+      }
+
+      function createSpriteSet(outer, roundedOuter) {
+        const sprites = new Array(ROTATION_STEPS)
+        for (let i = 0; i < ROTATION_STEPS; i++) {
+          const c = document.createElement('canvas')
+          c.width = SPRITE_SIZE
+          c.height = SPRITE_SIZE
+          const g = c.getContext('2d')
+          g.translate(SPRITE_SIZE * 0.5, SPRITE_SIZE * 0.5)
+          g.rotate((i / ROTATION_STEPS) * TWO_PI)
+
+          const outerSize = SPRITE_SIZE * SPRITE_OUTER_RATIO
+          g.fillStyle = outer
+          if (roundedOuter) {
+            const r = outerSize * 0.28
+            const h = outerSize * 0.5
+            g.beginPath()
+            g.moveTo(-h + r, -h)
+            g.lineTo(h - r, -h)
+            g.arcTo(h, -h, h, -h + r, r)
+            g.lineTo(h, h - r)
+            g.arcTo(h, h, h - r, h, r)
+            g.lineTo(-h + r, h)
+            g.arcTo(-h, h, -h, h - r, r)
+            g.lineTo(-h, -h + r)
+            g.arcTo(-h, -h, -h + r, -h, r)
+            g.closePath()
+            g.fill()
+          } else {
+            g.fillRect(-outerSize * 0.5, -outerSize * 0.5, outerSize, outerSize)
+          }
+          sprites[i] = c
+        }
+        return sprites
+      }
+
+      const goldSprites = createSpriteSet(GOLD, true)
+      const blueSprites = createSpriteSet(BLUE, false)
+      const spriteSets = [goldSprites, blueSprites]
+
+      function resetParticle(i, randomizeX) {
+        const r = rand()
+        const clusterBias = r * r * r
+
+        progress[i] = randomizeX ? 1 - clusterBias : 0
+        speed[i] = 0.11 + rand() * 0.15
+        kind[i] = rand() < 0.82 ? 0 : 1
+        offset[i] = (rand() * 2 - 1) * STREAM_JITTER
+        slopeJitter[i] = rand() * 2 - 1
+        rotIndex[i] = (rand() * ROTATION_STEPS) | 0
+      }
+
+      function initParticles() {
+        for (let i = 0; i < MAX_PARTICLES; i++) {
+          resetParticle(i, true)
+        }
+      }
+
+      function applyResize() {
+        const nextW = canvas.clientWidth | 0
+        const nextH = canvas.clientHeight | 0
+        if (nextW === viewW && nextH === viewH) {
+          return
+        }
+
+        viewW = nextW
+        viewH = nextH
+        canvas.width = (viewW * DPR) | 0
+        canvas.height = (viewH * DPR) | 0
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
+        ctx.imageSmoothingEnabled = false
+        ctx.fillStyle = BG
+
+        streamY = viewH * BASE_STREAM_Y
+        wideSpread = viewH * 0.34
+        speedScale =
+          ((FLOW_SPEED * 60) / Math.max(1, viewW)) *
+          (viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
+            ? 1
+            : MOBILE_FLOW_SPEED_MIN +
+              (1 - MOBILE_FLOW_SPEED_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
+        cubeBaseSize =
+          BASE_CUBE_SIZE *
+          (viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
+            ? 1
+            : MOBILE_CUBE_SCALE_MIN +
+              (1 - MOBILE_CUBE_SCALE_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
+        const mobileViewportFactor = Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH
+        const mobileParticleDensity =
+          viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
+            ? 1
+            : MOBILE_PARTICLE_DENSITY_MIN + (1 - MOBILE_PARTICLE_DENSITY_MIN) * mobileViewportFactor
+        const minParticles =
+          viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
+            ? MIN_PARTICLES
+            : (MOBILE_MIN_PARTICLES + (MIN_PARTICLES - MOBILE_MIN_PARTICLES) * mobileViewportFactor) | 0
+        const targetParticles = Math.min(
+          MAX_PARTICLES,
+          Math.max(minParticles, (viewW * 0.42 * mobileParticleDensity) | 0)
+        )
+        minActiveParticles = minParticles
+        maxActiveParticles = viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH ? MAX_PARTICLES : targetParticles
+        activeParticles = targetParticles
+
+        initParticles()
+      }
+
+      function scheduleResize() {
+        if (resizeRaf !== 0) {
+          return
+        }
+
+        resizeRaf = requestAnimationFrame(() => {
+          resizeRaf = 0
+          applyResize()
+        })
+      }
+
+      function updateAndDraw(dt60) {
+        for (let i = 0; i < activeParticles; i++) {
+          let p = progress[i] + speed[i] * speedScale * dt60
+          if (p > 1.02) {
+            resetParticle(i, false)
+            p = progress[i]
+          } else {
+            progress[i] = p
+          }
+
+          const pr = p < 0 ? 0 : p > 1 ? 1 : p
+          const lutIndex = (pr * LUT_LAST) | 0
+          const x = pr * viewW
+
+          const spread = wideSpread * funnelFactorLut[lutIndex]
+          const y = streamY + offset[i] * spread + slopeJitter[i] * spread * 0.05
+
+          const s = cubeBaseSize * sizeScaleLut[lutIndex]
+
+          const ri = rotIndex[i]
+          const sprites = spriteSets[kind[i]]
+          ctx.drawImage(sprites[ri], x - s * 0.5, y - s * 0.5, s, s)
+        }
+      }
+
+      let lastRender = 0
+      let perfTick = 0
+      let frameHandle = 0
+      let perfCooldown = 0
+
+      function queueFrame() {
+        if (frameHandle !== 0) {
+          return
+        }
+        frameHandle = requestAnimationFrame(frame)
+      }
+
+      function resetFrameTiming() {
+        lastRender = 0
+        perfCooldown = PERF_SAMPLE_EVERY
+      }
+
+      function frame(now) {
+        frameHandle = 0
+        if (lastRender === 0) {
+          lastRender = now
+          queueFrame()
+          return
+        }
+
+        const deltaMs = now - lastRender
+        if (deltaMs > FRAME_GAP_RESET_MS) {
+          lastRender = now
+          perfCooldown = PERF_SAMPLE_EVERY
+          queueFrame()
+          return
+        }
+        lastRender = now
+        if (deltaMs <= 0) {
+          queueFrame()
+          return
+        }
+        const dt60 = Math.min(2.5, deltaMs / (1000 / 60))
+
+        const measurePerf = perfCooldown > 0 ? (--perfCooldown, false) : (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
+        const frameStart = measurePerf ? performance.now() : 0
+        ctx.fillRect(0, 0, viewW, viewH)
+        updateAndDraw(dt60)
+
+        if (measurePerf) {
+          const frameCost = performance.now() - frameStart
+          if (frameCost > 14 && activeParticles > minActiveParticles) {
+            activeParticles = Math.max(minActiveParticles, activeParticles - 12)
+          } else if (frameCost < 8 && activeParticles < maxActiveParticles) {
+            activeParticles = Math.min(maxActiveParticles, activeParticles + 6)
+          }
+        }
+
+        queueFrame()
+      }
+
+      buildLuts()
+      window.addEventListener('resize', scheduleResize, { passive: true })
+      applyResize()
+      resetFrameTiming()
+      queueFrame()
+    </script>
+  </body>
+</html>
