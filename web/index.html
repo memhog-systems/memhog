@@ -2,9 +2,43 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Memhog</title>
+    <meta
+      name="description"
+      content="Predictable, composable, and scriptable infrastructure for running Valkey on your own systems."
+    />
+    <meta name="robots" content="index,follow" />
+    <meta name="theme-color" content="#f8fcfd" />
+    <link rel="canonical" href="https://memhog.com/" />
+    <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
+    <link rel="shortcut icon" href="./favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+    <link rel="mask-icon" href="./safari-pinned-tab.svg" color="#4d8fdc" />
+    <meta name="apple-mobile-web-app-title" content="Memhog" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Memhog" />
+    <meta property="og:title" content="Memhog — boring infrastructure for stateful systems" />
+    <meta
+      property="og:description"
+      content="Predictable, composable, and scriptable infrastructure for running Valkey on your own systems."
+    />
+    <meta property="og:url" content="https://memhog.com/" />
+    <meta property="og:image" content="https://memhog.com/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Memhog — boring infrastructure for stateful systems" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Memhog — boring infrastructure for stateful systems" />
+    <meta
+      name="twitter:description"
+      content="Predictable, composable, and scriptable infrastructure for running Valkey on your own systems."
+    />
+    <meta name="twitter:image" content="https://memhog.com/og-image.png" />
+    <meta name="twitter:image:alt" content="Memhog — boring infrastructure for stateful systems" />
     <style>
       :root {
         color-scheme: only light;
@@ -42,6 +76,12 @@
         min-height: 220px;
         background: #f8fcfd;
         display: block;
+        pointer-events: none;
+        outline: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .content {
@@ -86,7 +126,7 @@
     </style>
   </head>
   <body>
-    <canvas id="flow"></canvas>
+    <canvas id="flow" aria-hidden="true"></canvas>
     <main class="content">
       <h1>
         Memhog —<br />
@@ -108,7 +148,6 @@
           alpha: false,
           antialias: false,
           depth: false,
-          desynchronized: true,
           powerPreference: 'high-performance',
           preserveDrawingBuffer: false,
           stencil: false,
@@ -177,7 +216,6 @@
         const GOLD_RGB = [140 / 255, 180 / 255, 215 / 255]
         const BLUE_RGB = [197 / 255, 217 / 255, 242 / 255]
         const TWO_PI = Math.PI * 2
-        const ROUND_RADIUS = SPRITE_OUTER_RATIO * 0.56
         const ROTATION_STEP_ANGLE = TWO_PI / ROTATION_STEPS
         const PARTICLE_FLOATS = 7
         const PARTICLE_STRIDE = PARTICLE_FLOATS * Float32Array.BYTES_PER_ELEMENT
@@ -287,6 +325,7 @@
             uniform float u_halfExtent;
 
             varying vec2 v_local;
+            varying float v_alpha;
             varying float v_kind;
 
             const float GATHER_POINT = ${glslFloat(GATHER_POINT)};
@@ -297,6 +336,10 @@
 
             float saturate(float x) {
               return clamp(x, 0.0, 1.0);
+            }
+
+            float smooth01(float x) {
+              return x * x * (3.0 - 2.0 * x);
             }
 
             void main() {
@@ -319,9 +362,12 @@
               );
               vec2 position = center + rotated * (size * 0.5);
               vec2 clip = (position / u_resolution) * 2.0 - 1.0;
+              float fadeIn = smooth01(saturate(pr / 0.06));
+              float fadeOut = 1.0 - smooth01(saturate((pr - 0.96) / 0.04));
 
               gl_Position = vec4(clip * vec2(1.0, -1.0), 0.0, 1.0);
               v_local = local;
+              v_alpha = fadeIn * fadeOut;
               v_kind = a_kind;
             }
           `,
@@ -331,26 +377,26 @@
             uniform vec3 u_gold;
             uniform vec3 u_blue;
             uniform float u_halfExtent;
-            uniform float u_roundRadius;
 
             varying vec2 v_local;
+            varying float v_alpha;
             varying float v_kind;
 
-            float roundedBoxSdf(vec2 p, vec2 b, float r) {
-              vec2 q = abs(p) - b;
-              return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+            const float EDGE_SOFTNESS = 0.05;
+
+            float squareSdf(vec2 p, float b) {
+              vec2 q = abs(p) - vec2(b);
+              return max(q.x, q.y);
             }
 
             void main() {
-              if (v_kind < 0.5) {
-                float d = roundedBoxSdf(v_local, vec2(u_halfExtent - u_roundRadius), u_roundRadius);
-                if (d > 0.0) {
-                  discard;
-                }
-                gl_FragColor = vec4(u_gold, 1.0);
-              } else {
-                gl_FragColor = vec4(u_blue, 1.0);
+              float d = squareSdf(v_local, u_halfExtent);
+              float alpha = 1.0 - smoothstep(0.0, EDGE_SOFTNESS, d);
+              if (alpha <= 0.001) {
+                discard;
               }
+              gl_FragColor =
+                v_kind < 0.5 ? vec4(u_gold, alpha * v_alpha * 0.92) : vec4(u_blue, alpha * v_alpha * 0.88);
             }
           `
         )
@@ -376,7 +422,8 @@
         gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer)
         gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW)
         gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer)
-        gl.disable(gl.BLEND)
+        gl.enable(gl.BLEND)
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
         gl.disable(gl.DEPTH_TEST)
         gl.disable(gl.DITHER)
         gl.clearColor(BG_RGB[0], BG_RGB[1], BG_RGB[2], 1)
@@ -397,7 +444,6 @@
         const goldLoc = gl.getUniformLocation(program, 'u_gold')
         const blueLoc = gl.getUniformLocation(program, 'u_blue')
         const halfExtentLoc = gl.getUniformLocation(program, 'u_halfExtent')
-        const roundRadiusLoc = gl.getUniformLocation(program, 'u_roundRadius')
 
         if (
           cornerLoc < 0 ||
@@ -415,8 +461,7 @@
           !cubeBaseSizeLoc ||
           !goldLoc ||
           !blueLoc ||
-          !halfExtentLoc ||
-          !roundRadiusLoc
+          !halfExtentLoc
         ) {
           gl.deleteBuffer(quadBuffer)
           gl.deleteBuffer(particleBuffer)
@@ -466,7 +511,6 @@
         gl.uniform3f(goldLoc, GOLD_RGB[0], GOLD_RGB[1], GOLD_RGB[2])
         gl.uniform3f(blueLoc, BLUE_RGB[0], BLUE_RGB[1], BLUE_RGB[2])
         gl.uniform1f(halfExtentLoc, SPRITE_OUTER_RATIO)
-        gl.uniform1f(roundRadiusLoc, ROUND_RADIUS)
         gl.uniform1f(elapsed60Loc, 0)
 
         function initParticles() {
