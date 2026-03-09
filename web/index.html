@@ -169,6 +169,7 @@
         const IOS_SAFARI_PARTICLE_CAP = 0.7
         const IOS_SAFARI_SLOW_FRAME_MS = 20.5
         const IOS_SAFARI_FAST_FRAME_MS = 17.5
+        const IOS_SAFARI_STREAK_FRAMES = 3
         const PERF_SAMPLE_EVERY = 8
         const FRAME_GAP_RESET_MS = 250
 
@@ -559,6 +560,9 @@
         let perfTick = 0
         let frameHandle = 0
         let perfCooldown = 0
+        let smoothedDelta = 1000 / 60
+        let slowFrameStreak = 0
+        let fastFrameStreak = 0
 
         function queueFrame() {
           if (frameHandle !== 0) {
@@ -570,6 +574,9 @@
         function resetFrameTiming() {
           lastRender = 0
           elapsed60 = 0
+          smoothedDelta = 1000 / 60
+          slowFrameStreak = 0
+          fastFrameStreak = 0
           gl.uniform1f(elapsed60Loc, 0)
           perfCooldown = PERF_SAMPLE_EVERY
         }
@@ -596,25 +603,49 @@
             return
           }
 
-          const dt60 = Math.min(2.5, deltaMs / (1000 / 60))
-          const measurePerf = perfCooldown > 0 ? (--perfCooldown, false) : (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
+          smoothedDelta = smoothedDelta * 0.85 + deltaMs * 0.15
+          const dt60 = Math.min(2.5, smoothedDelta / (1000 / 60))
+          let measurePerf = false
+          if (perfCooldown > 0) {
+            perfCooldown -= 1
+          } else {
+            measurePerf = (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
+          }
           elapsed60 += dt60
           gl.uniform1f(elapsed60Loc, elapsed60)
           gl.clear(gl.COLOR_BUFFER_BIT)
           instancing.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, activeParticles)
 
           if (IS_IOS_SAFARI && isMobileCanvas) {
-            if (deltaMs > IOS_SAFARI_SLOW_FRAME_MS && activeParticles > minActiveParticles) {
-              activeParticles = Math.max(minActiveParticles, activeParticles - 8)
-            } else if (deltaMs < IOS_SAFARI_FAST_FRAME_MS && activeParticles < maxActiveParticles) {
-              activeParticles = Math.min(maxActiveParticles, activeParticles + 2)
+            if (deltaMs > IOS_SAFARI_SLOW_FRAME_MS) {
+              slowFrameStreak += 1
+              fastFrameStreak = 0
+              if (slowFrameStreak >= IOS_SAFARI_STREAK_FRAMES && activeParticles > minActiveParticles) {
+                activeParticles = Math.max(minActiveParticles, activeParticles - 8)
+                slowFrameStreak = 0
+              }
+            } else if (deltaMs < IOS_SAFARI_FAST_FRAME_MS) {
+              fastFrameStreak += 1
+              slowFrameStreak = 0
+              if (fastFrameStreak >= IOS_SAFARI_STREAK_FRAMES && activeParticles < maxActiveParticles) {
+                activeParticles = Math.min(maxActiveParticles, activeParticles + 2)
+                fastFrameStreak = 0
+              }
+            } else {
+              slowFrameStreak = 0
+              fastFrameStreak = 0
             }
           } else if (isMobileCanvas && measurePerf) {
+            slowFrameStreak = 0
+            fastFrameStreak = 0
             if (deltaMs > 18.5 && activeParticles > minActiveParticles) {
               activeParticles = Math.max(minActiveParticles, activeParticles - 12)
             } else if (deltaMs < 15.5 && activeParticles < maxActiveParticles) {
               activeParticles = Math.min(maxActiveParticles, activeParticles + 6)
             }
+          } else {
+            slowFrameStreak = 0
+            fastFrameStreak = 0
           }
 
           queueFrame()
