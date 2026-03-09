@@ -98,294 +98,533 @@
     </main>
 
     <script>
-      const canvas = document.getElementById('flow')
-      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
-
-      const DPR = 1
-      const MAX_PARTICLES = 560
-      const MIN_PARTICLES = 220
-      const BASE_STREAM_Y = 0.56
-      const STREAM_JITTER = 0.85
-      const FLOW_SPEED = 0.45
-      const CUBE_SIZE_SCALE = 1
-      const GATHER_POINT = 0.35
-      const FUNNEL_START = 0.12
-      const POST_GATHER_SIZE_SCALE = 0.5
-      const SIZE_TRANSITION_LENGTH = 0.2
-      const ROTATION_STEPS = 24
-      const SPRITE_SIZE = 64
-      const SPRITE_OUTER_RATIO = 0.56
-      const SPRITE_DRAW_SCALE = 1 / SPRITE_OUTER_RATIO
-      const BASE_CUBE_SIZE = 10.8 * CUBE_SIZE_SCALE * SPRITE_DRAW_SCALE
-      const MOBILE_CUBE_SCALE_MIN = 0.52
-      const MOBILE_CUBE_SCALE_MAX_WIDTH = 768
-      const MOBILE_FLOW_SPEED_MIN = 0.38
-      const MOBILE_MIN_PARTICLES = 36
-      const MOBILE_PARTICLE_DENSITY_MIN = 0.22
-      const PERF_SAMPLE_EVERY = 8
-      const LUT_SIZE = 1024
-      const LUT_LAST = LUT_SIZE - 1
-      const FRAME_GAP_RESET_MS = 250
-
-      const BG = '#f8fcfd'
-      const GOLD = '#8cb4d7'
-      const BLUE = '#c5d9f2'
-      const TWO_PI = Math.PI * 2
-
-      let viewW = 0
-      let viewH = 0
-      let streamY = 0
-      let wideSpread = 0
-      let speedScale = 0
-      let cubeBaseSize = BASE_CUBE_SIZE
-      let resizeRaf = 0
-
-      let seed = 0x9e3779b9
-      const rand = () => {
-        seed ^= seed << 13
-        seed ^= seed >>> 17
-        seed ^= seed << 5
-        return (seed >>> 0) / 4294967296
-      }
-
-      const progress = new Float32Array(MAX_PARTICLES)
-      const speed = new Float32Array(MAX_PARTICLES)
-      const offset = new Float32Array(MAX_PARTICLES)
-      const slopeJitter = new Float32Array(MAX_PARTICLES)
-      const kind = new Uint8Array(MAX_PARTICLES)
-      const rotIndex = new Uint8Array(MAX_PARTICLES)
-      const funnelFactorLut = new Float32Array(LUT_SIZE)
-      const sizeScaleLut = new Float32Array(LUT_SIZE)
-
-      let activeParticles = MAX_PARTICLES
-      let minActiveParticles = MIN_PARTICLES
-      let maxActiveParticles = MAX_PARTICLES
-
-      function buildLuts() {
-        const invFunnelSpan = 1 / Math.max(0.001, GATHER_POINT - FUNNEL_START)
-        const invSizeSpan = 1 / Math.max(0.001, SIZE_TRANSITION_LENGTH)
-        const postGatherDrop = 1 - POST_GATHER_SIZE_SCALE
-
-        for (let i = 0; i < LUT_SIZE; i++) {
-          const pr = i / LUT_LAST
-
-          let funnel = 1
-          if (pr > FUNNEL_START) {
-            let t = (pr - FUNNEL_START) * invFunnelSpan
-            t = t < 0 ? 0 : t > 1 ? 1 : t
-            funnel = 1 - t * t * t
-          }
-          funnelFactorLut[i] = funnel
-
-          let tt = (pr - GATHER_POINT) * invSizeSpan
-          tt = tt < 0 ? 0 : tt > 1 ? 1 : tt
-          sizeScaleLut[i] = 1 - tt * postGatherDrop
-        }
-      }
-
-      function createSpriteSet(outer, roundedOuter) {
-        const sprites = new Array(ROTATION_STEPS)
-        for (let i = 0; i < ROTATION_STEPS; i++) {
-          const c = document.createElement('canvas')
-          c.width = SPRITE_SIZE
-          c.height = SPRITE_SIZE
-          const g = c.getContext('2d')
-          g.translate(SPRITE_SIZE * 0.5, SPRITE_SIZE * 0.5)
-          g.rotate((i / ROTATION_STEPS) * TWO_PI)
-
-          const outerSize = SPRITE_SIZE * SPRITE_OUTER_RATIO
-          g.fillStyle = outer
-          if (roundedOuter) {
-            const r = outerSize * 0.28
-            const h = outerSize * 0.5
-            g.beginPath()
-            g.moveTo(-h + r, -h)
-            g.lineTo(h - r, -h)
-            g.arcTo(h, -h, h, -h + r, r)
-            g.lineTo(h, h - r)
-            g.arcTo(h, h, h - r, h, r)
-            g.lineTo(-h + r, h)
-            g.arcTo(-h, h, -h, h - r, r)
-            g.lineTo(-h, -h + r)
-            g.arcTo(-h, -h, -h + r, -h, r)
-            g.closePath()
-            g.fill()
-          } else {
-            g.fillRect(-outerSize * 0.5, -outerSize * 0.5, outerSize, outerSize)
-          }
-          sprites[i] = c
-        }
-        return sprites
-      }
-
-      const goldSprites = createSpriteSet(GOLD, true)
-      const blueSprites = createSpriteSet(BLUE, false)
-      const spriteSets = [goldSprites, blueSprites]
-
-      function resetParticle(i, randomizeX) {
-        const r = rand()
-        const clusterBias = r * r * r
-
-        progress[i] = randomizeX ? 1 - clusterBias : 0
-        speed[i] = 0.11 + rand() * 0.15
-        kind[i] = rand() < 0.82 ? 0 : 1
-        offset[i] = (rand() * 2 - 1) * STREAM_JITTER
-        slopeJitter[i] = rand() * 2 - 1
-        rotIndex[i] = (rand() * ROTATION_STEPS) | 0
-      }
-
-      function initParticles() {
-        for (let i = 0; i < MAX_PARTICLES; i++) {
-          resetParticle(i, true)
-        }
-      }
-
-      function applyResize() {
-        const nextW = canvas.clientWidth | 0
-        const nextH = canvas.clientHeight | 0
-        if (nextW === viewW && nextH === viewH) {
+      ;(() => {
+        const canvas = document.getElementById('flow')
+        if (!(canvas instanceof HTMLCanvasElement)) {
           return
         }
 
-        viewW = nextW
-        viewH = nextH
-        canvas.width = (viewW * DPR) | 0
-        canvas.height = (viewH * DPR) | 0
-        ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
-        ctx.imageSmoothingEnabled = false
-        ctx.fillStyle = BG
+        const contextOptions = {
+          alpha: false,
+          antialias: false,
+          depth: false,
+          desynchronized: true,
+          powerPreference: 'high-performance',
+          preserveDrawingBuffer: false,
+          stencil: false,
+        }
+        const gl =
+          canvas.getContext('webgl2', contextOptions) ||
+          canvas.getContext('webgl', contextOptions) ||
+          canvas.getContext('experimental-webgl', contextOptions)
 
-        streamY = viewH * BASE_STREAM_Y
-        wideSpread = viewH * 0.34
-        speedScale =
-          ((FLOW_SPEED * 60) / Math.max(1, viewW)) *
-          (viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
-            ? 1
-            : MOBILE_FLOW_SPEED_MIN +
-              (1 - MOBILE_FLOW_SPEED_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
-        cubeBaseSize =
-          BASE_CUBE_SIZE *
-          (viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
-            ? 1
-            : MOBILE_CUBE_SCALE_MIN +
-              (1 - MOBILE_CUBE_SCALE_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
-        const mobileViewportFactor = Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH
-        const mobileParticleDensity =
-          viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
-            ? 1
-            : MOBILE_PARTICLE_DENSITY_MIN + (1 - MOBILE_PARTICLE_DENSITY_MIN) * mobileViewportFactor
-        const minParticles =
-          viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH
-            ? MIN_PARTICLES
-            : (MOBILE_MIN_PARTICLES + (MIN_PARTICLES - MOBILE_MIN_PARTICLES) * mobileViewportFactor) | 0
-        const targetParticles = Math.min(
-          MAX_PARTICLES,
-          Math.max(minParticles, (viewW * 0.42 * mobileParticleDensity) | 0)
+        if (!gl) {
+          return
+        }
+
+        const isWebGL2 =
+          typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext
+        const instancing = isWebGL2
+          ? {
+              drawArraysInstanced: (mode, first, count, primcount) =>
+                gl.drawArraysInstanced(mode, first, count, primcount),
+              vertexAttribDivisor: (index, divisor) => gl.vertexAttribDivisor(index, divisor),
+            }
+          : (() => {
+              const ext = gl.getExtension('ANGLE_instanced_arrays')
+              if (!ext) {
+                return null
+              }
+              return {
+                drawArraysInstanced: (mode, first, count, primcount) =>
+                  ext.drawArraysInstancedANGLE(mode, first, count, primcount),
+                vertexAttribDivisor: (index, divisor) => ext.vertexAttribDivisorANGLE(index, divisor),
+              }
+            })()
+
+        if (!instancing) {
+          return
+        }
+
+        const DPR = 1
+        const MAX_PARTICLES = 560
+        const MIN_PARTICLES = 220
+        const BASE_STREAM_Y = 0.56
+        const STREAM_JITTER = 0.85
+        const FLOW_SPEED = 0.45
+        const CUBE_SIZE_SCALE = 1
+        const GATHER_POINT = 0.35
+        const FUNNEL_START = 0.12
+        const POST_GATHER_SIZE_SCALE = 0.5
+        const SIZE_TRANSITION_LENGTH = 0.2
+        const ROTATION_STEPS = 24
+        const SPRITE_OUTER_RATIO = 0.56
+        const SPRITE_DRAW_SCALE = 1 / SPRITE_OUTER_RATIO
+        const BASE_CUBE_SIZE = 10.8 * CUBE_SIZE_SCALE * SPRITE_DRAW_SCALE
+        const MOBILE_CUBE_SCALE_MIN = 0.52
+        const MOBILE_CUBE_SCALE_MAX_WIDTH = 768
+        const MOBILE_FLOW_SPEED_MIN = 0.38
+        const MOBILE_MIN_PARTICLES = 36
+        const MOBILE_PARTICLE_DENSITY_MIN = 0.22
+        const IOS_SAFARI_PARTICLE_CAP = 0.7
+        const IOS_SAFARI_SLOW_FRAME_MS = 20.5
+        const IOS_SAFARI_FAST_FRAME_MS = 17.5
+        const PERF_SAMPLE_EVERY = 8
+        const FRAME_GAP_RESET_MS = 250
+
+        const BG_RGB = [248 / 255, 252 / 255, 253 / 255]
+        const GOLD_RGB = [140 / 255, 180 / 255, 215 / 255]
+        const BLUE_RGB = [197 / 255, 217 / 255, 242 / 255]
+        const TWO_PI = Math.PI * 2
+        const ROUND_RADIUS = SPRITE_OUTER_RATIO * 0.56
+        const ROTATION_STEP_ANGLE = TWO_PI / ROTATION_STEPS
+        const PARTICLE_FLOATS = 7
+        const PARTICLE_STRIDE = PARTICLE_FLOATS * Float32Array.BYTES_PER_ELEMENT
+        const glslFloat = (value) => (Number.isInteger(value) ? value.toFixed(1) : `${value}`)
+        const UA = navigator.userAgent
+        const IS_IOS =
+          /iPad|iPhone|iPod/.test(UA) ||
+          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+        const IS_IOS_SAFARI = IS_IOS && /AppleWebKit/.test(UA) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(UA)
+
+        let viewW = 0
+        let viewH = 0
+        let streamY = 0
+        let wideSpread = 0
+        let speedScale = 0
+        let cubeBaseSize = BASE_CUBE_SIZE
+        let isMobileCanvas = false
+        let elapsed60 = 0
+        let resizeRaf = 0
+
+        let seed = 0x9e3779b9
+        const rand = () => {
+          seed ^= seed << 13
+          seed ^= seed >>> 17
+          seed ^= seed << 5
+          return (seed >>> 0) / 4294967296
+        }
+
+        const particleData = new Float32Array(MAX_PARTICLES * PARTICLE_FLOATS)
+        const quadData = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1])
+
+        let activeParticles = MAX_PARTICLES
+        let minActiveParticles = MIN_PARTICLES
+        let maxActiveParticles = MAX_PARTICLES
+
+        function compileShader(type, source) {
+          const shader = gl.createShader(type)
+          if (!shader) {
+            return null
+          }
+
+          gl.shaderSource(shader, source)
+          gl.compileShader(shader)
+
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(shader))
+            gl.deleteShader(shader)
+            return null
+          }
+
+          return shader
+        }
+
+        function createProgram(vertexSource, fragmentSource) {
+          const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource)
+          const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource)
+          if (!vertexShader || !fragmentShader) {
+            if (vertexShader) {
+              gl.deleteShader(vertexShader)
+            }
+            if (fragmentShader) {
+              gl.deleteShader(fragmentShader)
+            }
+            return null
+          }
+
+          const program = gl.createProgram()
+          if (!program) {
+            gl.deleteShader(vertexShader)
+            gl.deleteShader(fragmentShader)
+            return null
+          }
+
+          gl.attachShader(program, vertexShader)
+          gl.attachShader(program, fragmentShader)
+          gl.linkProgram(program)
+          gl.deleteShader(vertexShader)
+          gl.deleteShader(fragmentShader)
+
+          if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error(gl.getProgramInfoLog(program))
+            gl.deleteProgram(program)
+            return null
+          }
+
+          return program
+        }
+
+        const program = createProgram(
+          `
+            precision highp float;
+
+            attribute vec2 a_corner;
+            attribute float a_baseProgress;
+            attribute float a_speed;
+            attribute float a_offset;
+            attribute float a_slopeJitter;
+            attribute vec2 a_rotation;
+            attribute float a_kind;
+
+            uniform vec2 u_resolution;
+            uniform float u_elapsed60;
+            uniform float u_streamY;
+            uniform float u_wideSpread;
+            uniform float u_speedScale;
+            uniform float u_cubeBaseSize;
+            uniform float u_halfExtent;
+
+            varying vec2 v_local;
+            varying float v_kind;
+
+            const float GATHER_POINT = ${glslFloat(GATHER_POINT)};
+            const float FUNNEL_START = ${glslFloat(FUNNEL_START)};
+            const float POST_GATHER_SIZE_SCALE = ${glslFloat(POST_GATHER_SIZE_SCALE)};
+            const float INV_FUNNEL_SPAN = ${glslFloat(1 / Math.max(0.001, GATHER_POINT - FUNNEL_START))};
+            const float INV_SIZE_SPAN = ${glslFloat(1 / Math.max(0.001, SIZE_TRANSITION_LENGTH))};
+
+            float saturate(float x) {
+              return clamp(x, 0.0, 1.0);
+            }
+
+            void main() {
+              float rawProgress = mod(a_baseProgress + u_elapsed60 * a_speed * u_speedScale, 1.02);
+              float pr = clamp(rawProgress, 0.0, 1.0);
+              float funnelT = saturate((pr - FUNNEL_START) * INV_FUNNEL_SPAN);
+              float funnel = 1.0 - funnelT * funnelT * funnelT;
+              float sizeT = saturate((pr - GATHER_POINT) * INV_SIZE_SPAN);
+              float sizeScale = 1.0 - sizeT * (1.0 - POST_GATHER_SIZE_SCALE);
+              float spread = u_wideSpread * funnel;
+              float size = max(1.0, u_cubeBaseSize * sizeScale);
+              vec2 center = vec2(
+                pr * u_resolution.x,
+                u_streamY + a_offset * spread + a_slopeJitter * spread * 0.05
+              );
+              vec2 local = a_corner * u_halfExtent;
+              vec2 rotated = vec2(
+                a_rotation.x * local.x - a_rotation.y * local.y,
+                a_rotation.y * local.x + a_rotation.x * local.y
+              );
+              vec2 position = center + rotated * (size * 0.5);
+              vec2 clip = (position / u_resolution) * 2.0 - 1.0;
+
+              gl_Position = vec4(clip * vec2(1.0, -1.0), 0.0, 1.0);
+              v_local = local;
+              v_kind = a_kind;
+            }
+          `,
+          `
+            precision highp float;
+
+            uniform vec3 u_gold;
+            uniform vec3 u_blue;
+            uniform float u_halfExtent;
+            uniform float u_roundRadius;
+
+            varying vec2 v_local;
+            varying float v_kind;
+
+            float roundedBoxSdf(vec2 p, vec2 b, float r) {
+              vec2 q = abs(p) - b;
+              return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+            }
+
+            void main() {
+              if (v_kind < 0.5) {
+                float d = roundedBoxSdf(v_local, vec2(u_halfExtent - u_roundRadius), u_roundRadius);
+                if (d > 0.0) {
+                  discard;
+                }
+                gl_FragColor = vec4(u_gold, 1.0);
+              } else {
+                gl_FragColor = vec4(u_blue, 1.0);
+              }
+            }
+          `
         )
-        minActiveParticles = minParticles
-        maxActiveParticles = viewW >= MOBILE_CUBE_SCALE_MAX_WIDTH ? MAX_PARTICLES : targetParticles
-        activeParticles = targetParticles
+
+        if (!program) {
+          return
+        }
+
+        const particleBuffer = gl.createBuffer()
+        const quadBuffer = gl.createBuffer()
+        if (!particleBuffer || !quadBuffer) {
+          if (particleBuffer) {
+            gl.deleteBuffer(particleBuffer)
+          }
+          if (quadBuffer) {
+            gl.deleteBuffer(quadBuffer)
+          }
+          gl.deleteProgram(program)
+          return
+        }
+
+        gl.useProgram(program)
+        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer)
+        gl.bufferData(gl.ARRAY_BUFFER, quadData, gl.STATIC_DRAW)
+        gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer)
+        gl.disable(gl.BLEND)
+        gl.disable(gl.DEPTH_TEST)
+        gl.disable(gl.DITHER)
+        gl.clearColor(BG_RGB[0], BG_RGB[1], BG_RGB[2], 1)
+
+        const cornerLoc = gl.getAttribLocation(program, 'a_corner')
+        const baseProgressLoc = gl.getAttribLocation(program, 'a_baseProgress')
+        const speedLoc = gl.getAttribLocation(program, 'a_speed')
+        const offsetLoc = gl.getAttribLocation(program, 'a_offset')
+        const slopeJitterLoc = gl.getAttribLocation(program, 'a_slopeJitter')
+        const rotationLoc = gl.getAttribLocation(program, 'a_rotation')
+        const kindLoc = gl.getAttribLocation(program, 'a_kind')
+        const resolutionLoc = gl.getUniformLocation(program, 'u_resolution')
+        const elapsed60Loc = gl.getUniformLocation(program, 'u_elapsed60')
+        const streamYLoc = gl.getUniformLocation(program, 'u_streamY')
+        const wideSpreadLoc = gl.getUniformLocation(program, 'u_wideSpread')
+        const speedScaleLoc = gl.getUniformLocation(program, 'u_speedScale')
+        const cubeBaseSizeLoc = gl.getUniformLocation(program, 'u_cubeBaseSize')
+        const goldLoc = gl.getUniformLocation(program, 'u_gold')
+        const blueLoc = gl.getUniformLocation(program, 'u_blue')
+        const halfExtentLoc = gl.getUniformLocation(program, 'u_halfExtent')
+        const roundRadiusLoc = gl.getUniformLocation(program, 'u_roundRadius')
+
+        if (
+          cornerLoc < 0 ||
+          baseProgressLoc < 0 ||
+          speedLoc < 0 ||
+          offsetLoc < 0 ||
+          slopeJitterLoc < 0 ||
+          rotationLoc < 0 ||
+          kindLoc < 0 ||
+          !resolutionLoc ||
+          !elapsed60Loc ||
+          !streamYLoc ||
+          !wideSpreadLoc ||
+          !speedScaleLoc ||
+          !cubeBaseSizeLoc ||
+          !goldLoc ||
+          !blueLoc ||
+          !halfExtentLoc ||
+          !roundRadiusLoc
+        ) {
+          gl.deleteBuffer(quadBuffer)
+          gl.deleteBuffer(particleBuffer)
+          gl.deleteProgram(program)
+          return
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer)
+        gl.enableVertexAttribArray(cornerLoc)
+        gl.vertexAttribPointer(cornerLoc, 2, gl.FLOAT, false, 2 * Float32Array.BYTES_PER_ELEMENT, 0)
+        instancing.vertexAttribDivisor(cornerLoc, 0)
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer)
+        gl.enableVertexAttribArray(baseProgressLoc)
+        gl.vertexAttribPointer(baseProgressLoc, 1, gl.FLOAT, false, PARTICLE_STRIDE, 0)
+        instancing.vertexAttribDivisor(baseProgressLoc, 1)
+        gl.enableVertexAttribArray(speedLoc)
+        gl.vertexAttribPointer(speedLoc, 1, gl.FLOAT, false, PARTICLE_STRIDE, Float32Array.BYTES_PER_ELEMENT)
+        instancing.vertexAttribDivisor(speedLoc, 1)
+        gl.enableVertexAttribArray(offsetLoc)
+        gl.vertexAttribPointer(offsetLoc, 1, gl.FLOAT, false, PARTICLE_STRIDE, 2 * Float32Array.BYTES_PER_ELEMENT)
+        instancing.vertexAttribDivisor(offsetLoc, 1)
+        gl.enableVertexAttribArray(slopeJitterLoc)
+        gl.vertexAttribPointer(
+          slopeJitterLoc,
+          1,
+          gl.FLOAT,
+          false,
+          PARTICLE_STRIDE,
+          3 * Float32Array.BYTES_PER_ELEMENT
+        )
+        instancing.vertexAttribDivisor(slopeJitterLoc, 1)
+        gl.enableVertexAttribArray(rotationLoc)
+        gl.vertexAttribPointer(
+          rotationLoc,
+          2,
+          gl.FLOAT,
+          false,
+          PARTICLE_STRIDE,
+          4 * Float32Array.BYTES_PER_ELEMENT
+        )
+        instancing.vertexAttribDivisor(rotationLoc, 1)
+        gl.enableVertexAttribArray(kindLoc)
+        gl.vertexAttribPointer(kindLoc, 1, gl.FLOAT, false, PARTICLE_STRIDE, 6 * Float32Array.BYTES_PER_ELEMENT)
+        instancing.vertexAttribDivisor(kindLoc, 1)
+
+        gl.uniform3f(goldLoc, GOLD_RGB[0], GOLD_RGB[1], GOLD_RGB[2])
+        gl.uniform3f(blueLoc, BLUE_RGB[0], BLUE_RGB[1], BLUE_RGB[2])
+        gl.uniform1f(halfExtentLoc, SPRITE_OUTER_RATIO)
+        gl.uniform1f(roundRadiusLoc, ROUND_RADIUS)
+        gl.uniform1f(elapsed60Loc, 0)
+
+        function initParticles() {
+          let cursor = 0
+          for (let i = 0; i < MAX_PARTICLES; i++) {
+            const r = rand()
+            const clusterBias = r * r * r
+            const angle = ((rand() * ROTATION_STEPS) | 0) * ROTATION_STEP_ANGLE
+
+            particleData[cursor++] = 1 - clusterBias
+            particleData[cursor++] = 0.11 + rand() * 0.15
+            particleData[cursor++] = (rand() * 2 - 1) * STREAM_JITTER
+            particleData[cursor++] = rand() * 2 - 1
+            particleData[cursor++] = Math.cos(angle)
+            particleData[cursor++] = Math.sin(angle)
+            particleData[cursor++] = rand() < 0.82 ? 0 : 1
+          }
+        }
 
         initParticles()
-      }
+        gl.bufferData(gl.ARRAY_BUFFER, particleData, gl.STATIC_DRAW)
 
-      function scheduleResize() {
-        if (resizeRaf !== 0) {
-          return
-        }
-
-        resizeRaf = requestAnimationFrame(() => {
-          resizeRaf = 0
-          applyResize()
-        })
-      }
-
-      function updateAndDraw(dt60) {
-        for (let i = 0; i < activeParticles; i++) {
-          let p = progress[i] + speed[i] * speedScale * dt60
-          if (p > 1.02) {
-            resetParticle(i, false)
-            p = progress[i]
-          } else {
-            progress[i] = p
+        function applyResize() {
+          const nextW = canvas.clientWidth | 0
+          const nextH = canvas.clientHeight | 0
+          if (nextW === viewW && nextH === viewH) {
+            return
           }
 
-          const pr = p < 0 ? 0 : p > 1 ? 1 : p
-          const lutIndex = (pr * LUT_LAST) | 0
-          const x = pr * viewW
+          viewW = nextW
+          viewH = nextH
 
-          const spread = wideSpread * funnelFactorLut[lutIndex]
-          const y = streamY + offset[i] * spread + slopeJitter[i] * spread * 0.05
+          canvas.width = Math.max(1, (viewW * DPR) | 0)
+          canvas.height = Math.max(1, (viewH * DPR) | 0)
+          gl.viewport(0, 0, canvas.width, canvas.height)
+          gl.uniform2f(resolutionLoc, Math.max(1, viewW), Math.max(1, viewH))
 
-          const s = cubeBaseSize * sizeScaleLut[lutIndex]
-
-          const ri = rotIndex[i]
-          const sprites = spriteSets[kind[i]]
-          ctx.drawImage(sprites[ri], x - s * 0.5, y - s * 0.5, s, s)
+          streamY = viewH * BASE_STREAM_Y
+          wideSpread = viewH * 0.34
+          isMobileCanvas = viewW < MOBILE_CUBE_SCALE_MAX_WIDTH
+          speedScale =
+            ((FLOW_SPEED * 60) / Math.max(1, viewW)) *
+            (!isMobileCanvas
+              ? 1
+              : MOBILE_FLOW_SPEED_MIN +
+                (1 - MOBILE_FLOW_SPEED_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
+          cubeBaseSize =
+            BASE_CUBE_SIZE *
+            (!isMobileCanvas
+              ? 1
+              : MOBILE_CUBE_SCALE_MIN +
+                (1 - MOBILE_CUBE_SCALE_MIN) * Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH)
+          const mobileViewportFactor = Math.max(0, viewW) / MOBILE_CUBE_SCALE_MAX_WIDTH
+          const mobileParticleDensity =
+            !isMobileCanvas
+              ? 1
+              : MOBILE_PARTICLE_DENSITY_MIN + (1 - MOBILE_PARTICLE_DENSITY_MIN) * mobileViewportFactor
+          const minParticles =
+            !isMobileCanvas
+              ? MIN_PARTICLES
+              : (MOBILE_MIN_PARTICLES + (MIN_PARTICLES - MOBILE_MIN_PARTICLES) * mobileViewportFactor) | 0
+          let targetParticles = Math.min(
+            MAX_PARTICLES,
+            Math.max(minParticles, (viewW * 0.42 * mobileParticleDensity) | 0)
+          )
+          if (IS_IOS_SAFARI && isMobileCanvas) {
+            targetParticles = Math.max(minParticles, (targetParticles * IOS_SAFARI_PARTICLE_CAP) | 0)
+          }
+          minActiveParticles = minParticles
+          maxActiveParticles = !isMobileCanvas ? MAX_PARTICLES : targetParticles
+          activeParticles = targetParticles
+          gl.uniform1f(streamYLoc, streamY)
+          gl.uniform1f(wideSpreadLoc, wideSpread)
+          gl.uniform1f(speedScaleLoc, speedScale)
+          gl.uniform1f(cubeBaseSizeLoc, cubeBaseSize)
+          gl.clear(gl.COLOR_BUFFER_BIT)
         }
-      }
 
-      let lastRender = 0
-      let perfTick = 0
-      let frameHandle = 0
-      let perfCooldown = 0
+        function scheduleResize() {
+          if (resizeRaf !== 0) {
+            return
+          }
 
-      function queueFrame() {
-        if (frameHandle !== 0) {
-          return
-        }
-        frameHandle = requestAnimationFrame(frame)
-      }
-
-      function resetFrameTiming() {
-        lastRender = 0
-        perfCooldown = PERF_SAMPLE_EVERY
-      }
-
-      function frame(now) {
-        frameHandle = 0
-        if (lastRender === 0) {
-          lastRender = now
-          queueFrame()
-          return
+          resizeRaf = requestAnimationFrame(() => {
+            resizeRaf = 0
+            applyResize()
+          })
         }
 
-        const deltaMs = now - lastRender
-        if (deltaMs > FRAME_GAP_RESET_MS) {
-          lastRender = now
+        let lastRender = 0
+        let perfTick = 0
+        let frameHandle = 0
+        let perfCooldown = 0
+
+        function queueFrame() {
+          if (frameHandle !== 0) {
+            return
+          }
+          frameHandle = requestAnimationFrame(frame)
+        }
+
+        function resetFrameTiming() {
+          lastRender = 0
+          elapsed60 = 0
+          gl.uniform1f(elapsed60Loc, 0)
           perfCooldown = PERF_SAMPLE_EVERY
-          queueFrame()
-          return
         }
-        lastRender = now
-        if (deltaMs <= 0) {
-          queueFrame()
-          return
-        }
-        const dt60 = Math.min(2.5, deltaMs / (1000 / 60))
 
-        const measurePerf = perfCooldown > 0 ? (--perfCooldown, false) : (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
-        const frameStart = measurePerf ? performance.now() : 0
-        ctx.fillRect(0, 0, viewW, viewH)
-        updateAndDraw(dt60)
-
-        if (measurePerf) {
-          const frameCost = performance.now() - frameStart
-          if (frameCost > 14 && activeParticles > minActiveParticles) {
-            activeParticles = Math.max(minActiveParticles, activeParticles - 12)
-          } else if (frameCost < 8 && activeParticles < maxActiveParticles) {
-            activeParticles = Math.min(maxActiveParticles, activeParticles + 6)
+        function frame(now) {
+          frameHandle = 0
+          if (lastRender === 0) {
+            lastRender = now
+            queueFrame()
+            return
           }
+
+          const deltaMs = now - lastRender
+          if (deltaMs > FRAME_GAP_RESET_MS) {
+            lastRender = now
+            perfCooldown = PERF_SAMPLE_EVERY
+            queueFrame()
+            return
+          }
+
+          lastRender = now
+          if (deltaMs <= 0 || viewW <= 0 || viewH <= 0) {
+            queueFrame()
+            return
+          }
+
+          const dt60 = Math.min(2.5, deltaMs / (1000 / 60))
+          const measurePerf = perfCooldown > 0 ? (--perfCooldown, false) : (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
+          elapsed60 += dt60
+          gl.uniform1f(elapsed60Loc, elapsed60)
+          gl.clear(gl.COLOR_BUFFER_BIT)
+          instancing.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, activeParticles)
+
+          if (IS_IOS_SAFARI && isMobileCanvas) {
+            if (deltaMs > IOS_SAFARI_SLOW_FRAME_MS && activeParticles > minActiveParticles) {
+              activeParticles = Math.max(minActiveParticles, activeParticles - 8)
+            } else if (deltaMs < IOS_SAFARI_FAST_FRAME_MS && activeParticles < maxActiveParticles) {
+              activeParticles = Math.min(maxActiveParticles, activeParticles + 2)
+            }
+          } else if (isMobileCanvas && measurePerf) {
+            if (deltaMs > 18.5 && activeParticles > minActiveParticles) {
+              activeParticles = Math.max(minActiveParticles, activeParticles - 12)
+            } else if (deltaMs < 15.5 && activeParticles < maxActiveParticles) {
+              activeParticles = Math.min(maxActiveParticles, activeParticles + 6)
+            }
+          }
+
+          queueFrame()
         }
 
+        window.addEventListener('resize', scheduleResize, { passive: true })
+        applyResize()
+        resetFrameTiming()
         queueFrame()
-      }
-
-      buildLuts()
-      window.addEventListener('resize', scheduleResize, { passive: true })
-      applyResize()
-      resetFrameTiming()
-      queueFrame()
+      })()
     </script>
   </body>
 </html>
