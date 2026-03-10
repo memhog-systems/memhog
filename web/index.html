@@ -146,7 +146,7 @@
 
         const contextOptions = {
           alpha: false,
-          antialias: false,
+          antialias: true,
           depth: false,
           powerPreference: 'high-performance',
           preserveDrawingBuffer: false,
@@ -185,7 +185,8 @@
           return
         }
 
-        const DPR = 1
+        const MAX_DPR = 3
+        const STATIC_ELAPSED60 = 287
         const MAX_PARTICLES = 560
         const MIN_PARTICLES = 220
         const BASE_STREAM_Y = 0.56
@@ -205,12 +206,6 @@
         const MOBILE_FLOW_SPEED_MIN = 0.38
         const MOBILE_MIN_PARTICLES = 36
         const MOBILE_PARTICLE_DENSITY_MIN = 0.22
-        const IOS_SAFARI_PARTICLE_CAP = 0.7
-        const IOS_SAFARI_SLOW_FRAME_MS = 20.5
-        const IOS_SAFARI_FAST_FRAME_MS = 17.5
-        const IOS_SAFARI_STREAK_FRAMES = 3
-        const PERF_SAMPLE_EVERY = 8
-        const FRAME_GAP_RESET_MS = 250
 
         const BG_RGB = [248 / 255, 252 / 255, 253 / 255]
         const GOLD_RGB = [140 / 255, 180 / 255, 215 / 255]
@@ -220,11 +215,6 @@
         const PARTICLE_FLOATS = 7
         const PARTICLE_STRIDE = PARTICLE_FLOATS * Float32Array.BYTES_PER_ELEMENT
         const glslFloat = (value) => (Number.isInteger(value) ? value.toFixed(1) : `${value}`)
-        const UA = navigator.userAgent
-        const IS_IOS =
-          /iPad|iPhone|iPod/.test(UA) ||
-          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-        const IS_IOS_SAFARI = IS_IOS && /AppleWebKit/.test(UA) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(UA)
 
         let viewW = 0
         let viewH = 0
@@ -233,7 +223,7 @@
         let speedScale = 0
         let cubeBaseSize = BASE_CUBE_SIZE
         let isMobileCanvas = false
-        let elapsed60 = 0
+        let dpr = 1
         let resizeRaf = 0
 
         let seed = 0x9e3779b9
@@ -248,8 +238,6 @@
         const quadData = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1])
 
         let activeParticles = MAX_PARTICLES
-        let minActiveParticles = MIN_PARTICLES
-        let maxActiveParticles = MAX_PARTICLES
 
         function compileShader(type, source) {
           const shader = gl.createShader(type)
@@ -351,16 +339,18 @@
               float sizeScale = 1.0 - sizeT * (1.0 - POST_GATHER_SIZE_SCALE);
               float spread = u_wideSpread * funnel;
               float size = max(1.0, u_cubeBaseSize * sizeScale);
+              float gathered = step(GATHER_POINT, pr);
               vec2 center = vec2(
                 pr * u_resolution.x,
                 u_streamY + a_offset * spread + a_slopeJitter * spread * 0.05
               );
               vec2 local = a_corner * u_halfExtent;
-              vec2 rotated = vec2(
+              vec2 freeRotated = vec2(
                 a_rotation.x * local.x - a_rotation.y * local.y,
                 a_rotation.y * local.x + a_rotation.x * local.y
               );
-              vec2 position = center + rotated * (size * 0.5);
+              vec2 displayLocal = mix(freeRotated, local, gathered);
+              vec2 position = center + displayLocal * (size * 0.5);
               vec2 clip = (position / u_resolution) * 2.0 - 1.0;
               float fadeIn = smooth01(saturate(pr / 0.06));
               float fadeOut = 1.0 - smooth01(saturate((pr - 0.96) / 0.04));
@@ -382,7 +372,7 @@
             varying float v_alpha;
             varying float v_kind;
 
-            const float EDGE_SOFTNESS = 0.05;
+            const float EDGE_SOFTNESS = 0.08;
 
             float squareSdf(vec2 p, float b) {
               vec2 q = abs(p) - vec2(b);
@@ -536,15 +526,17 @@
         function applyResize() {
           const nextW = canvas.clientWidth | 0
           const nextH = canvas.clientHeight | 0
-          if (nextW === viewW && nextH === viewH) {
+          const nextDpr = Math.max(1, Math.min(window.devicePixelRatio || 1, MAX_DPR))
+          if (nextW === viewW && nextH === viewH && nextDpr === dpr) {
             return
           }
 
           viewW = nextW
           viewH = nextH
+          dpr = nextDpr
 
-          canvas.width = Math.max(1, (viewW * DPR) | 0)
-          canvas.height = Math.max(1, (viewH * DPR) | 0)
+          canvas.width = Math.max(1, Math.round(viewW * dpr))
+          canvas.height = Math.max(1, Math.round(viewH * dpr))
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.uniform2f(resolutionLoc, Math.max(1, viewW), Math.max(1, viewH))
 
@@ -576,17 +568,18 @@
             MAX_PARTICLES,
             Math.max(minParticles, (viewW * 0.42 * mobileParticleDensity) | 0)
           )
-          if (IS_IOS_SAFARI && isMobileCanvas) {
-            targetParticles = Math.max(minParticles, (targetParticles * IOS_SAFARI_PARTICLE_CAP) | 0)
-          }
-          minActiveParticles = minParticles
-          maxActiveParticles = !isMobileCanvas ? MAX_PARTICLES : targetParticles
           activeParticles = targetParticles
           gl.uniform1f(streamYLoc, streamY)
           gl.uniform1f(wideSpreadLoc, wideSpread)
           gl.uniform1f(speedScaleLoc, speedScale)
           gl.uniform1f(cubeBaseSizeLoc, cubeBaseSize)
           gl.clear(gl.COLOR_BUFFER_BIT)
+        }
+
+        function renderStaticFrame() {
+          gl.uniform1f(elapsed60Loc, STATIC_ELAPSED60)
+          gl.clear(gl.COLOR_BUFFER_BIT)
+          instancing.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, activeParticles)
         }
 
         function scheduleResize() {
@@ -597,108 +590,14 @@
           resizeRaf = requestAnimationFrame(() => {
             resizeRaf = 0
             applyResize()
+            renderStaticFrame()
           })
         }
 
-        let lastRender = 0
-        let perfTick = 0
-        let frameHandle = 0
-        let perfCooldown = 0
-        let smoothedDelta = 1000 / 60
-        let slowFrameStreak = 0
-        let fastFrameStreak = 0
-
-        function queueFrame() {
-          if (frameHandle !== 0) {
-            return
-          }
-          frameHandle = requestAnimationFrame(frame)
-        }
-
-        function resetFrameTiming() {
-          lastRender = 0
-          elapsed60 = 0
-          smoothedDelta = 1000 / 60
-          slowFrameStreak = 0
-          fastFrameStreak = 0
-          gl.uniform1f(elapsed60Loc, 0)
-          perfCooldown = PERF_SAMPLE_EVERY
-        }
-
-        function frame(now) {
-          frameHandle = 0
-          if (lastRender === 0) {
-            lastRender = now
-            queueFrame()
-            return
-          }
-
-          const deltaMs = now - lastRender
-          if (deltaMs > FRAME_GAP_RESET_MS) {
-            lastRender = now
-            perfCooldown = PERF_SAMPLE_EVERY
-            queueFrame()
-            return
-          }
-
-          lastRender = now
-          if (deltaMs <= 0 || viewW <= 0 || viewH <= 0) {
-            queueFrame()
-            return
-          }
-
-          smoothedDelta = smoothedDelta * 0.85 + deltaMs * 0.15
-          const dt60 = Math.min(2.5, smoothedDelta / (1000 / 60))
-          let measurePerf = false
-          if (perfCooldown > 0) {
-            perfCooldown -= 1
-          } else {
-            measurePerf = (perfTick++ & (PERF_SAMPLE_EVERY - 1)) === 0
-          }
-          elapsed60 += dt60
-          gl.uniform1f(elapsed60Loc, elapsed60)
-          gl.clear(gl.COLOR_BUFFER_BIT)
-          instancing.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, activeParticles)
-
-          if (IS_IOS_SAFARI && isMobileCanvas) {
-            if (deltaMs > IOS_SAFARI_SLOW_FRAME_MS) {
-              slowFrameStreak += 1
-              fastFrameStreak = 0
-              if (slowFrameStreak >= IOS_SAFARI_STREAK_FRAMES && activeParticles > minActiveParticles) {
-                activeParticles = Math.max(minActiveParticles, activeParticles - 8)
-                slowFrameStreak = 0
-              }
-            } else if (deltaMs < IOS_SAFARI_FAST_FRAME_MS) {
-              fastFrameStreak += 1
-              slowFrameStreak = 0
-              if (fastFrameStreak >= IOS_SAFARI_STREAK_FRAMES && activeParticles < maxActiveParticles) {
-                activeParticles = Math.min(maxActiveParticles, activeParticles + 2)
-                fastFrameStreak = 0
-              }
-            } else {
-              slowFrameStreak = 0
-              fastFrameStreak = 0
-            }
-          } else if (isMobileCanvas && measurePerf) {
-            slowFrameStreak = 0
-            fastFrameStreak = 0
-            if (deltaMs > 18.5 && activeParticles > minActiveParticles) {
-              activeParticles = Math.max(minActiveParticles, activeParticles - 12)
-            } else if (deltaMs < 15.5 && activeParticles < maxActiveParticles) {
-              activeParticles = Math.min(maxActiveParticles, activeParticles + 6)
-            }
-          } else {
-            slowFrameStreak = 0
-            fastFrameStreak = 0
-          }
-
-          queueFrame()
-        }
-
         window.addEventListener('resize', scheduleResize, { passive: true })
+        window.visualViewport?.addEventListener('resize', scheduleResize, { passive: true })
         applyResize()
-        resetFrameTiming()
-        queueFrame()
+        renderStaticFrame()
       })()
     </script>
   </body>
