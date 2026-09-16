@@ -54,13 +54,11 @@ pub fn build(b: *std.Build) !void {
     pandoc.addFileArg(docs);
     _ = output.addCopyFile(index_html, "index.html");
 
-    const clean_zig_out = b.addRemoveDirTree(b.path("zig-out"));
     const install = b.addInstallDirectory(.{
         .source_dir = output.getDirectory(),
         .install_dir = .prefix,
         .install_subdir = ".",
     });
-    install.step.dependOn(&clean_zig_out.step);
 
     b.getInstallStep().dependOn(&install.step);
 
