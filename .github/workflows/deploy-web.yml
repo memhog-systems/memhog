@@ -5,7 +5,9 @@ on:
     branches:
       - main
     paths:
-      - 'web/**'
+      - '.github/workflows/deploy-web.yml'
+      - 'DOCS.md'
+      - 'src/membook/**'
 
   workflow_dispatch:
 
@@ -33,10 +35,22 @@ jobs:
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload /web directory as Pages artifact
+      - name: Download Zig
+        run: ./zig/download.sh
+
+      - name: Build website
+        env:
+          ZIG_LIB_DIR: ${{ github.workspace }}/zig/lib
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global-cache
+        run: |
+          cd src/membook
+          ../../zig/zig build
+
+      - name: Upload built website as Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web
+          path: ./src/membook/zig-out
 
       - name: Deploy to GitHub Pages
         id: deployment
